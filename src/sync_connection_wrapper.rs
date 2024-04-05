@@ -91,13 +91,16 @@ where
         T: AsQuery + 'query,
         T::Query: QueryFragment<Self::Backend> + QueryId + 'query,
     {
-        self.execute_with_prepared_query(source.as_query(), |conn, query| {
-            use diesel::row::IntoOwnedRow;
-            conn.load(&query).map(|c| {
-                c.map(|row| row.map(IntoOwnedRow::into_owned))
-                    .collect::<Vec<QueryResult<O>>>()
-            })
-        })
+        self.execute_with_prepared_query(
+            source.as_query(),
+            |conn, query: &CollectedQuery<MD, <T as AsQuery>::SqlType>| {
+                use diesel::row::IntoOwnedRow;
+                conn.load(&query).map(|c| {
+                    c.map(|row| row.map(IntoOwnedRow::into_owned))
+                        .collect::<Vec<QueryResult<O>>>()
+                })
+            },
+        )
         .map_ok(|rows| futures_util::stream::iter(rows).boxed())
         .boxed()
     }
@@ -183,10 +186,10 @@ impl<C> SyncConnectionWrapper<C> {
         .boxed()
     }
 
-    fn execute_with_prepared_query<'a, MD, Q, R>(
+    fn execute_with_prepared_query<'a, MD, ST, Q, R>(
         &mut self,
         query: Q,
-        callback: impl FnOnce(&mut C, &CollectedQuery<MD>) -> QueryResult<R> + Send + 'static,
+        callback: impl FnOnce(&mut C, &CollectedQuery<MD, ST>) -> QueryResult<R> + Send + 'static,
     ) -> BoxFuture<'a, QueryResult<R>>
     where
         // Backend bounds
