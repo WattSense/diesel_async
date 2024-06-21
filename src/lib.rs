@@ -348,3 +348,38 @@ pub trait AsyncConnection: SimpleAsyncConnection + Sized + Send {
     #[doc(hidden)]
     fn _silence_lint_on_load_future(_: Self::LoadFuture<'_, '_>) {}
 }
+
+// #[async_trait::async_trait]
+// trait AsyncConnectionExt: AsyncConnection {
+//     async fn transaction_sql<R, E, F>(&mut self, sql: &str, callback: F) -> Result<R, E>
+//     where
+//         F: for<'r> FnOnce(&'r mut Self) -> ScopedBoxFuture<'_, 'r, Result<R, E>> + Send,
+//         E: From<diesel::result::Error> + Send,
+//         R: Send;
+// }
+//
+// impl<C> AsyncConnectionExt for C
+// where
+//     C: AsyncConnection,
+//     // C: AsyncConnection<TransactionManager = AnsiTransactionManager>,
+// {
+//     async fn transaction_sql<R, E, F>(&mut self, sql: &str, callback: F) -> Result<R, E>
+//     where
+//         F: for<'r> FnOnce(&'r mut Self) -> ScopedBoxFuture<'_, 'r, Result<R, E>> + Send,
+//         E: From<diesel::result::Error> + Send,
+//         R: Send,
+//     {
+//         unimplemented!()
+//         // AnsiTransactionManager::begin_transaction_sql(&mut self, &sql).await?;
+//         // match f(&mut self).await {
+//         //     Ok(value) => {
+//         //         AnsiTransactionManager::commit_transaction(&mut self).await?;
+//         //         Ok(value)
+//         //     }
+//         //     Err(e) => {
+//         //         AnsiTransactionManager::rollback_transaction(&mut self).await?;
+//         //         Err(e)
+//         //     }
+//         // }
+//     }
+// }

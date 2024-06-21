@@ -110,9 +110,10 @@ pub trait TransactionManager<Conn: AsyncConnection>: Send {
 
 /// An implementation of `TransactionManager` which can be used for backends
 /// which use ANSI standard syntax for savepoints such as SQLite and PostgreSQL.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct AnsiTransactionManager {
     pub(crate) status: TransactionManagerStatus,
+    begin_sql: String,
 }
 
 // /// Status of the transaction manager
@@ -254,7 +255,20 @@ pub struct AnsiTransactionManager {
 //     DecreaseDepth,
 // }
 
+impl Default for AnsiTransactionManager {
+    fn default() -> Self {
+        Self::new_with_begin_sql("BEGIN")
+    }
+}
+
 impl AnsiTransactionManager {
+    pub fn new_with_begin_sql(sql: impl AsRef<str>) -> AnsiTransactionManager {
+        AnsiTransactionManager {
+            status: TransactionManagerStatus::default(),
+            begin_sql: sql.as_ref().to_string(),
+        }
+    }
+
     fn get_transaction_state<Conn>(
         conn: &mut Conn,
     ) -> QueryResult<&mut ValidTransactionManagerStatus>

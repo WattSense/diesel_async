@@ -1,3 +1,6 @@
+use std::thread;
+use std::time::Duration;
+
 use diesel::prelude::*;
 use diesel::sqlite::{Sqlite, SqliteConnection};
 use diesel_async::async_connection_wrapper::AsyncConnectionWrapper;
@@ -52,15 +55,18 @@ async fn transaction(
     async_conn: &mut SyncConnectionWrapper<InnerConnection>,
     old_name: &str,
     new_name: &str,
+    id: i32,
 ) -> Result<Vec<User>, diesel::result::Error> {
     async_conn
         .transaction::<Vec<User>, diesel::result::Error, _>(|c| {
             Box::pin(async {
-                if old_name.is_empty() {
-                    Ok(Vec::new())
-                } else {
-                    diesel::sql_query(
-                        r#"
+                let _data: Vec<User> = diesel::sql_query("SELECT * from users").load(c).await?;
+                diesel::insert_into(users::table)
+                    .values((users::id.eq(id), users::name.eq("mo")))
+                    .execute(c)
+                    .await?;
+                diesel::sql_query(
+                    r#"
                     update
                         users
                     set
@@ -69,15 +75,21 @@ async fn transaction(
                         name == ?1
                     returning *
                 "#,
-                    )
-                    .bind::<diesel::sql_types::Text, _>(old_name)
-                    .bind::<diesel::sql_types::Text, _>(new_name)
-                    .load(c)
-                    .await
-                }
+                )
+                .bind::<diesel::sql_types::Text, _>(old_name)
+                .bind::<diesel::sql_types::Text, _>(new_name)
+                .load(c)
+                .await
             })
         })
         .await
+}
+
+async fn handle_timeout(conn: &mut SyncConnectionWrapper<InnerConnection>) {
+    diesel::sql_query("PRAGMA busy_timeout = 60000;")
+        .execute(conn)
+        .await
+        .unwrap();
 }
 
 #[tokio::main]
@@ -95,6 +107,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     sync_wrapper
         .batch_execute("INSERT INTO users(id, name) VALUES (3, 'toto')")
         .await?;
+
+    let data: Vec<User> = diesel::sql_query("SELECT * from users")
+        .load(&mut sync_wrapper)
+        .await?;
+    println!("{data:?}");
 
     let data: Vec<User> = users::table
         .select(User::as_select())
@@ -126,19 +143,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut conn_a: SyncConnectionWrapper<InnerConnection> = establish(&db_url).await?;
     let mut conn_b: SyncConnectionWrapper<InnerConnection> = establish(&db_url).await?;
 
+    handle_timeout(&mut conn_a).await;
+    handle_timeout(&mut conn_b).await;
+
+    thread::sleep(Duration::from_secs(1));
+
+    println!("GO");
+
     tokio::spawn(async move {
+        let mut id = 2;
         loop {
-            let changed = transaction(&mut conn_a, "iLuke", "JustLuke").await;
+            let changed = transaction(&mut conn_a, "iLuke", "JustLuke", id).await;
             println!("Changed {changed:?}");
             std::thread::sleep(std::time::Duration::from_secs(1));
+            id += 2;
         }
     });
 
     tokio::spawn(async move {
+        let mut id = 3;
         loop {
-            let changed = transaction(&mut conn_b, "JustLuke", "iLuke").await;
+            let changed = transaction(&mut conn_b, "JustLuke", "iLuke", id).await;
             println!("Changed {changed:?}");
             std::thread::sleep(std::time::Duration::from_secs(1));
+            id += 2;
         }
     });
 

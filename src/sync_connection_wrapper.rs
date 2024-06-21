@@ -7,7 +7,7 @@
 //! * using a sync Connection implementation in async context
 //! * using the same code base for async crates needing multiple backends
 
-use crate::{AsyncConnection, SimpleAsyncConnection, TransactionManager};
+use crate::{AnsiTransactionManager, AsyncConnection, SimpleAsyncConnection, TransactionManager};
 use diesel::backend::{Backend, DieselReserveSpecialization};
 use diesel::connection::{
     Connection, LoadConnection, TransactionManagerStatus, WithMetadataLookup,
@@ -71,6 +71,7 @@ fn from_tokio_join_error(join_error: JoinError) -> diesel::result::Error {
 /// ```
 pub struct SyncConnectionWrapper<C> {
     inner: Arc<Mutex<C>>,
+    transaction_state: Arc<Mutex<AnsiTransactionManager>>,
 }
 
 #[async_trait::async_trait]
@@ -108,14 +109,14 @@ where
     type Stream<'conn, 'query> = BoxStream<'static, QueryResult<Self::Row<'conn, 'query>>>;
     type Row<'conn, 'query> = O;
     type Backend = <C as Connection>::Backend;
-    type TransactionManager = SyncTransactionManagerWrapper<<C as Connection>::TransactionManager>;
+    type TransactionManager = AnsiTransactionManager;
 
     async fn establish(database_url: &str) -> ConnectionResult<Self> {
         let database_url = database_url.to_string();
         tokio::task::spawn_blocking(move || C::establish(&database_url))
             .await
             .unwrap_or_else(|e| Err(diesel::ConnectionError::BadConnection(e.to_string())))
-            .map(|c| SyncConnectionWrapper::new(c))
+            .map(|c| SyncConnectionWrapper::new_with_begin_sql(c, "BEGIN EXCLUSIVE"))
     }
 
     fn load<'conn, 'query, T>(&'conn mut self, source: T) -> Self::LoadFuture<'conn, 'query>
@@ -144,45 +145,22 @@ where
         self.execute_with_prepared_query(source, |conn, query| conn.execute_returning_count(&query))
     }
 
-    fn transaction_state(
-        &mut self,
-    ) -> &mut <Self::TransactionManager as TransactionManager<Self>>::TransactionStateData {
-        self.exclusive_connection().transaction_state()
+    fn transaction_state(&mut self) -> &mut AnsiTransactionManager {
+        // there should be no other pending future when this is called
+        // that means there is only one instance of this arc and
+        // we can simply access the inner data
+        if let Some(tm) = Arc::get_mut(&mut self.transaction_state) {
+            tm.get_mut()
+                .expect("Mutex is poisoned, a thread must have panicked holding it.")
+        } else {
+            panic!("Cannot access shared transaction state")
+        }
     }
-}
-
-/// A wrapper of a diesel transaction manager usable in async context.
-pub struct SyncTransactionManagerWrapper<T>(PhantomData<T>);
-
-#[async_trait::async_trait]
-impl<T, C> TransactionManager<SyncConnectionWrapper<C>> for SyncTransactionManagerWrapper<T>
-where
-    SyncConnectionWrapper<C>: AsyncConnection,
-    C: Connection + 'static,
-    T: diesel::connection::TransactionManager<C> + Send,
-{
-    type TransactionStateData = T::TransactionStateData;
-
-    async fn begin_transaction(conn: &mut SyncConnectionWrapper<C>) -> QueryResult<()> {
-        conn.spawn_blocking(move |inner| T::begin_transaction(inner))
-            .await
-    }
-
-    async fn commit_transaction(conn: &mut SyncConnectionWrapper<C>) -> QueryResult<()> {
-        conn.spawn_blocking(move |inner| T::commit_transaction(inner))
-            .await
-    }
-
-    async fn rollback_transaction(conn: &mut SyncConnectionWrapper<C>) -> QueryResult<()> {
-        conn.spawn_blocking(move |inner| T::rollback_transaction(inner))
-            .await
-    }
-
-    fn transaction_manager_status_mut(
-        conn: &mut SyncConnectionWrapper<C>,
-    ) -> &mut TransactionManagerStatus {
-        T::transaction_manager_status_mut(conn.exclusive_connection())
-    }
+    //     fn transaction_state(
+    //         &mut self,
+    //     ) -> &mut AnsiTransactionManager {
+    //         self.exclusive_connection().transaction_state()
+    //     }
 }
 
 impl<C> SyncConnectionWrapper<C> {
@@ -193,6 +171,19 @@ impl<C> SyncConnectionWrapper<C> {
     {
         SyncConnectionWrapper {
             inner: Arc::new(Mutex::new(connection)),
+            transaction_state: Arc::new(Mutex::new(AnsiTransactionManager::default())),
+        }
+    }
+
+    pub fn new_with_begin_sql(connection: C, sql: &str) -> Self
+    where
+        C: Connection,
+    {
+        SyncConnectionWrapper {
+            inner: Arc::new(Mutex::new(connection)),
+            transaction_state: Arc::new(Mutex::new(AnsiTransactionManager::new_with_begin_sql(
+                sql,
+            ))),
         }
     }
 
